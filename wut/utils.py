@@ -2,6 +2,7 @@
 import os
 import tempfile
 import httpx
+import sys
 from collections import namedtuple
 from subprocess import check_output, run, CalledProcessError, DEVNULL
 from typing import List, Optional, Tuple
@@ -15,9 +16,9 @@ from rich.markdown import Markdown
 
 # Local
 try:
-    from wut.prompts import EXPLAIN_PROMPT, ANSWER_PROMPT
+    from wut.prompts import EXPLAIN_PROMPT, ANSWER_PROMPT, FIX_PROMPT
 except ImportError:
-    from prompts import EXPLAIN_PROMPT, ANSWER_PROMPT # type: ignore
+    from prompts import EXPLAIN_PROMPT, ANSWER_PROMPT, FIX_PROMPT # type: ignore
 
 MAX_CHARS = 10000
 MAX_COMMANDS = 3
@@ -349,9 +350,25 @@ def build_query(context: str, query: Optional[str] = None) -> str:
     return f"{context}\n\n{query}"
 
 
+def get_os_info() -> str:
+    """Get OS type and distribution information."""
+    if sys.platform.startswith('win'):
+        return "Windows"
+    elif sys.platform == 'darwin':
+        return "macOS"
+    elif sys.platform.startswith('linux'):
+        if os.path.exists('/etc/os-release'):
+            with open('/etc/os-release', 'r') as f:
+                for line in f:
+                    if line.startswith('PRETTY_NAME='):
+                        return line.split('=')[1].strip().strip('"')
+        return "Linux"
+    return "Unknown OS"
+
 def explain(context: str, query: Optional[str] = None) -> Markdown:
-    system_message = EXPLAIN_PROMPT if not query else ANSWER_PROMPT
-    user_message = build_query(context, query)
+    system_message = EXPLAIN_PROMPT
+    os_info = get_os_info()
+    user_message = f"OS: {os_info}\n\n{build_query(context, query)}"
     provider = get_llm_provider()
 
     call_llm = run_openai
@@ -362,3 +379,25 @@ def explain(context: str, query: Optional[str] = None) -> Markdown:
 
     output = call_llm(system_message, user_message)
     return format_output(output)
+
+def fix(context: str) -> Tuple[str, Markdown]:
+    system_message = FIX_PROMPT
+    os_info = get_os_info()
+    user_message = f"OS: {os_info}\n\n{build_query(context)}"
+    provider = get_llm_provider()
+
+    call_llm = run_openai
+    if provider == "anthropic":
+        call_llm = run_anthropic
+    elif provider == "ollama":
+        call_llm = run_ollama
+
+    output = call_llm(system_message, user_message)
+    
+    import re
+    if match := re.search(r'```[^\n]*\n(.+?)```', output, re.DOTALL):
+        command = match.group(1).strip()
+    else:
+        command = ""
+
+    return command, format_output(output)
